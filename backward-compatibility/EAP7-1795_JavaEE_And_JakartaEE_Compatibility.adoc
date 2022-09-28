@@ -27,7 +27,7 @@ compatibility between Java EE 8- and Jakarta EE 9+ WildFly/EAP versions.
 * mailto:frainone@redhat.com[Flavia Rainone]
 
 === QE Contacts:
-TODO!!!
+TODO
 
 === Testing By
 * [ ] Engineering
@@ -128,54 +128,60 @@ Since WildFly HTTP protocol doesn't support 'handshake' kind of messages it is n
 protocol version in advance. The version number is in the URL of the particular service provided by the server, and the request
 is sent directly to that particular URL, without prior negotiation. Because of this we propose to:
 
-* implement a handshake based on a HTTP header
-* Install Java EE <-> Jakarta EE class name transformer if and only if the server is on EE namespace interoperable mode
-and the handshake indicates the connection requires such transformer
+* implement a protocol version handshake based on a HTTP header
+* clients on standard mode will just send the request to the new protocol version, 2, bypassing the protocol version negotiation
+* clients on EE namespace interoperability mode will send the request to protocol version 1 URL, with the header to negotiate
+the definitive protocol version for that connection
+* Install Java EE <-> Jakarta EE class name transformer if and only if using the protocol version 1
 
-The handshaking between two Jakarta 9+ client and servers, both running on EE namespace interoperable mode, works as follows:
+So, servers are always started making available the services on both versions 1 and 2. The difference between those
+versions is solely that version 1 receives requests in the Java EE 8- namespace while version 2 receives requests in the Jakarta
+EE 9+ namespace. For requests sent to version 1, the server applies the class name transformer to convert the classes to
+Jakarta EE 9+ namespace. If the protocol version 1 request comes from a legacy client, the server just handles the request. If
+the request comes from a Jakarta EE 9+ compatible client, there will be a header for protocol version negotiation. With this
+header, the server will respond the client with the same header, indicating that the client can upgrade to version 2.
 
-* whenever the client side opens a new connection to a server, the first request it sends via that connection contains
-the `x-wf-ee-ns: interop` HTTP header, and that first request is marshalled
-with the Java EE 8- <-> Jakarta EE 9+ class transformer, transforming the EE api classes in the request to `javax` EE
+Let's see in more detail how the protocol version handshaking works between two Jakarta EE 9+ client and servers, where the client is running
+on EE namespace interoperable mode:
+
+* whenever the client side opens a connection using a new connection pool, the first request it sends via that connection is
+forwarded to protocol version 1 URL. Also, this request contains the `x-wf-version: 2` HTTP header, and that first request is
+marshalled with the Java EE 8- <-> Jakarta EE 9+ class transformer, transforming the EE api classes in the request to `javax` EE
 namespace
-* the server receives the request, verifies it has the `x-wf-ee-ns: interop` header, and enables the class name
-transformer to transform the request back to `jakarta` namespace. The server though sends the response without the
-transformer, with the Jakarta EE 9+ classes intact, and adds the `x-wf-ee-ns: jakarta` header to the response
-* the client receives such response and reads the header. It indicates that this connection is a
-Jakarta EE 9+ connection at both ends, and the client is not supposed to transform the namespace of the EE classes
-contained in the response data.
-* from that point on, whenever the client uses the same connection, no transformation is done on its side. Furhtermore,
-all requests sent by the client through this connection contain the
-`x-wf-ee-ns: jakarta` header
-* whenever the server receives a request with the `x-wf-ee-ns: jakarta` header, it knows that the client is a
-Jakarta EE 9+ client running on EE namespace interoperable mode. So, it does not use any class file transformer
-for reading the request and writing the response.
+* the server receives the request with a protocol version 1 HTTP handler. This handler verifies the request has the
+`x-wf-version: 2` header, and adds the same header to the response. Also, as mentioned earlier, the class name transformer is
+automatically enabled at the version 1 protocol handler. Furthermore, the header added to the response indicates that this
+connection is a Jakarta EE 9+ connection at both ends, and the client is not supposed to transform the namespace of the EE
+classes contained in the response data.
+* from that point on, whenever the client uses the same connection, no transformation is done on its side, and all requests are
+sent to the protocol version 2 URL, that performs no handshaking and no class file transformation at the server side.
 
 Here is how the handshaking works when an EE namespace interoperable client sends a request to a Java EE 8- server:
 
-* as in the previous case, the client side opens a new connection to a server, and the first request it sends via that
-connection contains the `x-wf-ee-ns: interop` HTTP header. Also, that first request is marshalled
-with the Java EE <-> Jakarta EE class transformer, porting the request from `javakarta` to `javax` EE namespace
+* as in the previous case, the client side opens a new connection to a server, and the first request it sends at that connection
+pool contains the `x-wf-version: 2` HTTP header. Also, that first request is marshalled
+with the Java EE <-> Jakarta EE class transformer, porting the request from `jakarta` to `javax` EE namespace
 * the Java EE 8- server receives the request in Java EE format and handles the request normally, ignoring the
-`x-wf-ee-ns: interop` header.
-* the client receives the server response and checks it does not contain the `x-wf-ee-ns` header. So, it enables the
-Java EE <-> Jakarta EE class name transformer for that connection's lifetime.
-* from that point on, whenever the client uses the same connection, no extra header is added, and the
-class name transformer is always enabled, guaranteeing that the Jakarta EE 9+ classes are ported to Java EE 8- namespace
-on every request, and transformed back on every response
+`x-wf-version: 2` header.
+* the client receives the server response and checks it does not contain the `x-wf-version` header. So, it enables the
+Java EE <-> Jakarta EE class name transformer for that connection's lifetime, and marks that URI as a protocol version 1 at the
+connection pool
+* from that point on, whenever the client uses the same destiny, no extra header is added, all requests are sent to protocol version
+1 path, and the class name transformer is always enabled, guaranteeing that the Jakarta EE 9+ classes are ported to Java EE 8-
+namespace on every request, and transformed back on every response received from the server
 
 The final handshake scenario is a Java EE 8- client sending a request to a EE namespace interoperable server:
 
 * client sends the request to the server in the standard way, and the request  naturally can contain `javax` EE
 namespace classes
-* the server receives the request and verifies it does not contain the `x-wf-ee-ns` header. The server interprets
+* the server receives the request and verifies it does not contain the `x-wf-version` header. The server interprets
 this as an indication that the client is Java EE 8-, and it enables the class name transformer for both reading the request
 and writing the response back to the client.
 
 If a Jakarta EE9+ server receives a request from an EE namespace interoperable client, even if the server is not on
-interoperable mode it will be able to respond, because it will check the presence of the `x-wf-ee-ns: interop`
+interoperable mode it will be able to respond, because it will check the presence of the `x-wf-version: 2`
 header. In this case, it will apply the class name transformation to the request on read, and it will add the
-`x-wf-ee-ns: jakarta` header to the response on write. This allows the non-interoperable server to be able to serve
+`x-wf-version: 2` header to the response on write. This allows the non-interoperable server to be able to serve
 requests from interoperable clients.
 
 === Communication Across Multiple Endpoints
@@ -185,35 +191,16 @@ communicate with a server remotely:
 |===
 |                                             |Java EE 8- client | Jakarta EE 9+ client | Jakarta EE 9+ namespace interoperable client
 |Java EE 8- server                            | Yes              | No                   | Yes
-|Jakarta EE 9+ server                         | No               | Yes                  | Yes
-|Jakarta EE 9+ namespace interoperable server | Yes              | No                   | Yes
+|Jakarta EE 9+ server                         | Yes              | Yes                  | Yes
+|Jakarta EE 9+ namespace interoperable server | Yes              | Yes                  | Yes
 |===
 
-Notice that, in order for a Jakarta EE 9+ client to be able to communicate with a Jakarta EE 9+ interoperable server,
-the client must be also running on EE namespace interoperable mode.
+Notice that all versions are interoperable, except the Jakarta EE 9+ client when sending requests to a legacy server. That
+communication will not work unless it is on interoperable mode.
 
-Regarding handling cases where a server is non interoperable and receives a Javax EE namespace request, the code could,
-in the future, be smarter and detect potential mismatches between the endpoints that will cause the
-communication to fail. Such as current endpoint is not EE namespace interoperable while the other end is otherwise, or
-even if the other end is a Java EE 8- instance. If we do so, we could print a warning indicating that the EE namespace
-interoperability must be enabled at this server/client, so it can establish proper communication with the remote
-endpoint. However, there are two options to print this warning:
-
-* verifying if the message indicates the remote endpoint is running on EE namespace interoperability mode
-* or catching a ClassCastException when marshalling/unmarshalling and checking if the exception message contains `"javax"`
-
-While the former option sounds more elegant. The client would not have a way of detecting if it is invoking an incompatible
-server, unless we change the protocol to apply a `x-wf-ee-ns:javax` header to
-Java 8- clients requests. Both extra actions at the two ends will result in a performance penalty. The solution
-we propose at this moment was designed in a way to prevent by all means any kind of overhead in the standard
-communication between two Jakarta EE 9+ endpoints, leaving the extra overhead to the special case of an Java EE 9+
-endpoint needing to communicate with Java EE8- endpoints.
-
-[IMPORTANT]
-====
-All servers and clients are interoperable if the communication does not involve any EE class.
-This might lead a user to mistakenly believe that no such configuration was needed _"before, when my code was doing one
-thing, but now it has changed and it no longer works"_. However, *full interoperability among the clients and servers
-with mixed different EE libraries (i.e, `javax` vs `jakarta` namespace) is only guaranteed when all Jakarta EE 9+
-elements of that communication are running on _EE namespace interoperable mode_*.
-====
+Regarding handling cases where a client is non-interoperable and sends a version 2 protocol request to a legacy server, the
+we could make the client side smarter in the future, and enable EE interoperability mode. For HTTP based communication, we could
+do so after receiving the 404 response from the server. For communication using remoting protocol, it could just allow switching to the latest
+protocol in protocol handshaking when the connection is estabilished. Or we could print a warning indicating that the EE
+namespace interoperability must be enabled when we find those situations, indicating to the final user that they need to enable
+this mode so the client or server can establish proper communication with the remote endpoint.
